@@ -19,7 +19,7 @@ load_dotenv()
 inngest_client = inngest.Inngest(
     app_id="rag.app",
     logger=logging.getLogger("uvicorn"),
-    is_production=False,
+    is_production=True,
     serializer=inngest.PydanticSerializer()
 )
 
