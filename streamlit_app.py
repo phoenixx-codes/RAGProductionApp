@@ -14,17 +14,13 @@ st.set_page_config(page_title="RAG Ingest PDF", page_icon="📄", layout="center
 
 @st.cache_resource
 def get_inngest_client() -> inngest.Inngest:
-    # Check if running in production (either Streamlit Cloud or Render environment setup)
     is_prod = os.getenv("RENDER", "false") == "true" or os.getenv("STREAMLIT_PROD", "false") == "true"
     return inngest.Inngest(app_id="rag_app", is_production=is_prod)
 
 
 async def send_rag_ingest_event(file_name: str, file_bytes: bytes) -> None:
     client = get_inngest_client()
-
-    # Convert file bytes to base64 string so it can safely pass through JSON payloads across servers
     base64_pdf = base64.b64encode(file_bytes).decode("utf-8")
-
     await client.send(
         inngest.Event(
             name="rag/ingest_pdf",
@@ -41,10 +37,7 @@ uploaded = st.file_uploader("Choose a PDF", type=["pdf"], accept_multiple_files=
 
 if uploaded is not None:
     with st.spinner("Uploading and triggering ingestion across cloud services..."):
-        # Read the file directly from memory memory buffer
         file_bytes = uploaded.getvalue()
-
-        # Fire data straight to Inngest Cloud payload broker
         asyncio.run(send_rag_ingest_event(uploaded.name, file_bytes))
         time.sleep(0.3)
     st.success(f"Triggered cloud ingestion for: {uploaded.name}")
@@ -79,7 +72,6 @@ def fetch_runs(event_id: str) -> list[dict]:
     headers = {}
 
     if os.getenv("RENDER", "false") == "true" or os.getenv("STREAMLIT_PROD", "false") == "true":
-        # Streamlit cloud checks this variable to authorize API inquiries against live workspace logs
         token = os.getenv("INNGEST_SIGNING_KEY") or os.getenv("INNGEST_EVENT_KEY")
         headers["Authorization"] = f"Bearer {token}"
 
@@ -91,6 +83,7 @@ def fetch_runs(event_id: str) -> list[dict]:
         return []
 
 
+# ADDED BACK: The missing asynchronous polling function
 async def wait_for_run_output_async(event_id: str, timeout_s: float = 120.0) -> dict:
     start = time.time()
     while True:
@@ -107,6 +100,12 @@ async def wait_for_run_output_async(event_id: str, timeout_s: float = 120.0) -> 
         await asyncio.sleep(1.0)
 
 
+async def run_query_workflow(question_str: str, top_k_val: int) -> dict:
+    event_id = await send_rag_query_event(question_str, top_k_val)
+    output_data = await wait_for_run_output_async(event_id)
+    return output_data
+
+
 with st.form("rag_query_form"):
     question = st.text_input("Your question")
     top_k = st.number_input("How many chunks to retrieve", min_value=1, max_value=20, value=5, step=1)
@@ -114,14 +113,18 @@ with st.form("rag_query_form"):
 
     if submitted and question.strip():
         with st.spinner("Sending event and generating answer..."):
-            event_id = asyncio.run(send_rag_query_event(question.strip(), int(top_k)))
-            output = asyncio.run(wait_for_run_output_async(event_id))
-            answer = output.get("answer", "")
-            sources = output.get("sources", [])
+            try:
+                output = asyncio.run(run_query_workflow(question.strip(), int(top_k)))
 
-        st.subheader("Answer")
-        st.write(answer or "(No answer)")
-        if sources:
-            st.caption("Sources")
-            for s in sources:
-                st.write(f"- {s}")
+                answer = output.get("answer", "")
+                sources = output.get("sources", [])
+
+                st.subheader("Answer")
+                st.write(answer or "(No answer)")
+                if sources:
+                    st.caption("Sources")
+                    for s in sources:
+                        st.write(f"- {s}")
+
+            except Exception as e:
+                st.error(f"An unexpected query error occurred: {str(e)}")
