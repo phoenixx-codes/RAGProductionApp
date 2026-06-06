@@ -1,9 +1,10 @@
-import base64
+
 import datetime
 import logging
 import os
 import tempfile
 import uuid
+import requests
 from fastapi import FastAPI
 from groq import Groq
 from inngest import Inngest, Context, TriggerEvent
@@ -25,15 +26,22 @@ inngest_client = Inngest(
 
 
 def _load_step(ctx: Context) -> RAGChunkAndSrc:
-    pdf_base64 = ctx.event.data.get("pdf_base64")
+    pdf_url = ctx.event.data.get("pdf_url")
     source_id = ctx.event.data.get("source_id", "document.pdf")
 
-    if not pdf_base64:
-        raise ValueError("Missing 'pdf_base64' string context data.")
+    if not pdf_url:
+        raise ValueError("Missing 'pdf_url' string parameter in event data.")
+
+    # Streaming the raw PDF from Supabase URL
+    response = requests.get(pdf_url, stream=True)
+    if response.status_code != 200:
+        raise RuntimeError(f"Failed to fetch document from cloud storage. Status: {response.status_code}")
 
     # Write the incoming data safely to an internal OS ephemeral tempfile location
     with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_pdf:
-        temp_pdf.write(base64.b64decode(pdf_base64))
+        for chunk in response.iter_content(chunk_size=8192):
+            if chunk:
+                temp_pdf.write(chunk)
         temp_path = temp_pdf.name
 
     try:

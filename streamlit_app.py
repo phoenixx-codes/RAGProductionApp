@@ -6,11 +6,17 @@ import inngest
 import requests
 import streamlit as st
 from dotenv import load_dotenv
+from supabase import create_client, Client
 
 load_dotenv()
 
 st.set_page_config(page_title="RAG Ingest PDF", page_icon="📄", layout="centered")
 
+@st.cache_resource
+def get_supabase_client() -> Client:
+    url = os.getenv("SUPABASE_URL")
+    key = os.getenv("SUPABASE_KEY")
+    return create_client(url, key)
 
 @st.cache_resource
 def get_inngest_client() -> inngest.Inngest:
@@ -18,14 +24,13 @@ def get_inngest_client() -> inngest.Inngest:
     return inngest.Inngest(app_id="rag_app", is_production=is_prod)
 
 
-async def send_rag_ingest_event(file_name: str, file_bytes: bytes) -> None:
+async def send_rag_ingest_event(file_name: str, secure_signed_url: str) -> None:
     client = get_inngest_client()
-    base64_pdf = base64.b64encode(file_bytes).decode("utf-8")
     await client.send(
         inngest.Event(
             name="rag/ingest_pdf",
             data={
-                "pdf_base64": base64_pdf,
+                "pdf_url": secure_signed_url,
                 "source_id": file_name,
             },
         )
@@ -36,12 +41,35 @@ st.title("Upload a PDF to Ingest")
 uploaded = st.file_uploader("Choose a PDF", type=["pdf"], accept_multiple_files=False)
 
 if uploaded is not None:
-    with st.spinner("Uploading and triggering ingestion across cloud services..."):
+    with st.spinner("Uploading file securely to private cloud storage..."):
+        supabase = get_supabase_client()
         file_bytes = uploaded.getvalue()
-        asyncio.run(send_rag_ingest_event(uploaded.name, file_bytes))
-        time.sleep(0.3)
-    st.success(f"Triggered cloud ingestion for: {uploaded.name}")
-    st.caption("You can upload another PDF if you like.")
+
+
+        safe_filename = uploaded.name.replace(" ", "_")
+
+        try:
+
+            supabase.storage.from_("pdfs").upload(
+                path=safe_filename,
+                file=file_bytes,
+                file_options={"content-type": "application/pdf", "upsert": "true"}
+            )
+
+
+            sign_response = supabase.storage.from_("pdfs").create_signed_url(
+                path=safe_filename,
+                expires_in=900
+            )
+            secure_url = sign_response["signedURL"]
+
+
+            asyncio.run(send_rag_ingest_event(uploaded.name, secure_url))
+            time.sleep(0.3)
+            st.success(f"Successfully processed and triggered secure cloud ingestion!")
+
+        except Exception as upload_err:
+            st.error(f"Cloud storage pipeline failure: {str(upload_err)}")
 
 st.divider()
 st.title("Ask a question about your PDFs")
@@ -80,10 +108,11 @@ def fetch_runs(event_id: str) -> list[dict]:
         resp.raise_for_status()
         return resp.json().get("data", [])
     except Exception:
+        print(f"Polling HTTP network exception encountered: {str(e)}")
         return []
 
 
-# ADDED BACK: The missing asynchronous polling function
+
 async def wait_for_run_output_async(event_id: str, timeout_s: float = 120.0) -> dict:
     start = time.time()
     while True:
