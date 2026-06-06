@@ -7,6 +7,8 @@ class QdrantStorage:
         qdrant_url = os.getenv("QDRANT_URL", os.getenv("QDRANT_HOST_URL", "http://localhost:6333"))
         qdrant_api_key = os.getenv("QDRANT_API_KEY", None)
 
+        if "io:6333" in qdrant_url and qdrant_url.startswith("https://"):
+            qdrant_url = qdrant_url.replace("https://", "")
         self.client = QdrantClient(url=qdrant_url,api_key=qdrant_api_key, timeout=30)
         self.collection = collection
         if not self.client.collection_exists(self.collection):
