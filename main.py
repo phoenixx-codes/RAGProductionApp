@@ -1,25 +1,22 @@
-
-import logging
-from fastapi import FastAPI
-import inngest
-import inngest.fast_api
-#from inngest.experimental.ai.groq import Adapter
-from dotenv import load_dotenv
-import uuid
-import os
+import base64
 import datetime
+import logging
+import os
+import tempfile
+import uuid
+from fastapi import FastAPI
 from groq import Groq
+from inngest import Inngest, Context, TriggerEvent
+import inngest.fast_api
+from dotenv import load_dotenv
+
 from data_loader import load_and_chunk_pdf, embed_texts
 from vector_db import QdrantStorage
 from custom_types import RAQQueryResult, RAGSearchResult, RAGUpsertResult, RAGChunkAndSrc
-import base64
-import tempfile
-
 
 load_dotenv()
 
-
-inngest_client = inngest.Inngest(
+inngest_client = Inngest(
     app_id="rag_app",
     logger=logging.getLogger("uvicorn"),
     is_production=os.getenv("RENDER", "false") == "true",
@@ -27,14 +24,7 @@ inngest_client = inngest.Inngest(
 )
 
 
-
-def _load_step(ctx: inngest.Context) -> RAGChunkAndSrc:
-    pdf_path = ctx.event.data.get("pdf_path")
-    if not pdf_path:
-        raise ValueError("Missing 'pdf_path' in event data.")
-    source_id = ctx.event.data.get("source_id", pdf_path)
-    chunks = load_and_chunk_pdf(pdf_path)
-    return RAGChunkAndSrc(chunks=chunks, source_id=source_id)def _load_step(ctx: inngest.Context) -> RAGChunkAndSrc:
+def _load_step(ctx: Context) -> RAGChunkAndSrc:
     pdf_base64 = ctx.event.data.get("pdf_base64")
     source_id = ctx.event.data.get("source_id", "document.pdf")
 
@@ -55,6 +45,7 @@ def _load_step(ctx: inngest.Context) -> RAGChunkAndSrc:
 
     return RAGChunkAndSrc(chunks=chunks, source_id=source_id)
 
+
 def _upsert_step(chunks_and_src: RAGChunkAndSrc) -> RAGUpsertResult:
     chunks = chunks_and_src.chunks
     source_id = chunks_and_src.source_id
@@ -64,6 +55,7 @@ def _upsert_step(chunks_and_src: RAGChunkAndSrc) -> RAGUpsertResult:
     QdrantStorage().upsert(ids, vecs, payloads)
     return RAGUpsertResult(ingested=len(chunks))
 
+
 def _search_step(question: str, top_k: int = 5) -> RAGSearchResult:
     query_vec = embed_texts([question])[0]
     store = QdrantStorage()
@@ -71,12 +63,11 @@ def _search_step(question: str, top_k: int = 5) -> RAGSearchResult:
     return RAGSearchResult(contexts=found["contexts"], sources=found["sources"])
 
 
-
 @inngest_client.create_function(
     fn_id="rag_ingest_pdf",
-    trigger=inngest.TriggerEvent(event="rag/ingest_pdf"),
+    trigger=TriggerEvent(event="rag/ingest_pdf"),
 )
-async def rag_ingest_pdf(ctx: inngest.Context):
+async def rag_ingest_pdf(ctx: Context):
     chunks_and_src = await ctx.step.run(
         "load-and-chunk",
         lambda: _load_step(ctx),
@@ -92,9 +83,9 @@ async def rag_ingest_pdf(ctx: inngest.Context):
 
 @inngest_client.create_function(
     fn_id="rag_query_pdf_ai",
-    trigger=inngest.TriggerEvent(event="rag/query_pdf_ai")
+    trigger=TriggerEvent(event="rag/query_pdf_ai")
 )
-async def rag_query_pdf_ai(ctx: inngest.Context):
+async def rag_query_pdf_ai(ctx: Context):
     question = ctx.event.data["question"]
     top_k = int(ctx.event.data.get("top_k", 5))
 
