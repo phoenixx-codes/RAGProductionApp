@@ -2,7 +2,7 @@
 .venv/
 venv/
 
-# UV cache (VERY important in your case)
+# UV cache
 .uv-cache/
 .uv-cache-lock/
 
@@ -13,7 +13,7 @@ venv/
 __pycache__/
 *.pyc
 
-# Local DB / vector storage (VERY IMPORTANT ⚠️)
+# Local DB /
 qdrant_storage/
 
 # OS files
