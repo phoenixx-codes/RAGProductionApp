@@ -41,41 +41,42 @@ st.title("Upload a PDF to Ingest")
 uploaded = st.file_uploader("Choose a PDF", type=["pdf"], accept_multiple_files=False)
 
 if uploaded is not None:
-    with st.spinner("Uploading file securely to private cloud storage..."):
-        supabase = get_supabase_client()
-        file_bytes = uploaded.getvalue()
+    safe_filename = uploaded.name.replace(" ", "_")
+    # Tracking the active file context across browser refreshes/reruns
+    st.session_state["active_file"] = safe_filename
 
 
-        safe_filename = uploaded.name.replace(" ", "_")
+    if st.session_state.get("last_uploaded") != safe_filename:
+        with st.spinner("Uploading file securely to private cloud storage..."):
+            supabase = get_supabase_client()
+            file_bytes = uploaded.getvalue()
 
-        try:
+            try:
+                supabase.storage.from_("pdfs").upload(
+                    path=safe_filename,
+                    file=file_bytes,
+                    file_options={"content-type": "application/pdf", "upsert": "true"}
+                )
 
-            supabase.storage.from_("pdfs").upload(
-                path=safe_filename,
-                file=file_bytes,
-                file_options={"content-type": "application/pdf", "upsert": "true"}
-            )
+                sign_response = supabase.storage.from_("pdfs").create_signed_url(
+                    path=safe_filename,
+                    expires_in=900
+                )
+                secure_url = sign_response["signedURL"]
 
+                asyncio.run(send_rag_ingest_event(safe_filename, secure_url))
+                st.session_state["last_uploaded"] = safe_filename
+                time.sleep(0.3)
+                st.success(f"Successfully processed and triggered secure cloud ingestion!")
 
-            sign_response = supabase.storage.from_("pdfs").create_signed_url(
-                path=safe_filename,
-                expires_in=900
-            )
-            secure_url = sign_response["signedURL"]
-
-
-            asyncio.run(send_rag_ingest_event(uploaded.name, secure_url))
-            time.sleep(0.3)
-            st.success(f"Successfully processed and triggered secure cloud ingestion!")
-
-        except Exception as upload_err:
-            st.error(f"Cloud storage pipeline failure: {str(upload_err)}")
+            except Exception as upload_err:
+                st.error(f"Cloud storage pipeline failure: {str(upload_err)}")
 
 st.divider()
 st.title("Ask a question about your PDFs")
 
 
-async def send_rag_query_event(question: str, top_k: int) -> str:
+async def send_rag_query_event(question: str, top_k: int, source_id: str) -> str:
     client = get_inngest_client()
     result = await client.send(
         inngest.Event(
@@ -83,6 +84,7 @@ async def send_rag_query_event(question: str, top_k: int) -> str:
             data={
                 "question": question,
                 "top_k": top_k,
+                "source_id": source_id,
             },
         )
     )
@@ -107,10 +109,9 @@ def fetch_runs(event_id: str) -> list[dict]:
         resp = requests.get(url, headers=headers, timeout=10)
         resp.raise_for_status()
         return resp.json().get("data", [])
-    except Exception:
+    except Exception as e:
         print(f"Polling HTTP network exception encountered: {str(e)}")
         return []
-
 
 
 async def wait_for_run_output_async(event_id: str, timeout_s: float = 120.0) -> dict:
@@ -129,8 +130,8 @@ async def wait_for_run_output_async(event_id: str, timeout_s: float = 120.0) -> 
         await asyncio.sleep(1.0)
 
 
-async def run_query_workflow(question_str: str, top_k_val: int) -> dict:
-    event_id = await send_rag_query_event(question_str, top_k_val)
+async def run_query_workflow(question_str: str, top_k_val: int, source_id: str) -> dict:
+    event_id = await send_rag_query_event(question_str, top_k_val, source_id)
     output_data = await wait_for_run_output_async(event_id)
     return output_data
 
@@ -141,19 +142,23 @@ with st.form("rag_query_form"):
     submitted = st.form_submit_button("Ask")
 
     if submitted and question.strip():
-        with st.spinner("Sending event and generating answer..."):
-            try:
-                output = asyncio.run(run_query_workflow(question.strip(), int(top_k)))
+        active_file = st.session_state.get("active_file", "")
+        if not active_file:
+            st.warning("Please upload a PDF file first to establish a search context context.")
+        else:
+            with st.spinner("Sending event and generating answer..."):
+                try:
+                    output = asyncio.run(run_query_workflow(question.strip(), int(top_k), active_file))
 
-                answer = output.get("answer", "")
-                sources = output.get("sources", [])
+                    answer = output.get("answer", "")
+                    sources = output.get("sources", [])
 
-                st.subheader("Answer")
-                st.write(answer or "(No answer)")
-                if sources:
-                    st.caption("Sources")
-                    for s in sources:
-                        st.write(f"- {s}")
+                    st.subheader("Answer")
+                    st.write(answer or "(No answer)")
+                    if sources:
+                        st.caption("Sources")
+                        for s in sources:
+                            st.write(f"- {s}")
 
-            except Exception as e:
-                st.error(f"An unexpected query error occurred: {str(e)}")
+                except Exception as e:
+                    st.error(f"An unexpected query error occurred: {str(e)}")

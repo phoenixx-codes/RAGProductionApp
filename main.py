@@ -1,4 +1,3 @@
-
 import datetime
 import logging
 import os
@@ -32,12 +31,10 @@ def _load_step(ctx: Context) -> RAGChunkAndSrc:
     if not pdf_url:
         raise ValueError("Missing 'pdf_url' string parameter in event data.")
 
-    # Streaming the raw PDF from Supabase URL
     response = requests.get(pdf_url, stream=True)
     if response.status_code != 200:
         raise RuntimeError(f"Failed to fetch document from cloud storage. Status: {response.status_code}")
 
-    # Write the incoming data safely to an internal OS ephemeral tempfile location
     with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_pdf:
         for chunk in response.iter_content(chunk_size=8192):
             if chunk:
@@ -47,7 +44,6 @@ def _load_step(ctx: Context) -> RAGChunkAndSrc:
     try:
         chunks = load_and_chunk_pdf(temp_path)
     finally:
-        # Erase temporary track traces to prevent garbage footprint retention leaks
         if os.path.exists(temp_path):
             os.remove(temp_path)
 
@@ -64,10 +60,11 @@ def _upsert_step(chunks_and_src: RAGChunkAndSrc) -> RAGUpsertResult:
     return RAGUpsertResult(ingested=len(chunks))
 
 
-def _search_step(question: str, top_k: int = 5) -> RAGSearchResult:
+def _search_step(question: str, top_k: int = 5, source_id: str = None) -> RAGSearchResult:
     query_vec = embed_texts([question])[0]
     store = QdrantStorage()
-    found = store.search(query_vec, top_k)
+    # Route tracking constraint variables straight into your database engine instance
+    found = store.search(query_vec, top_k, source_id=source_id)
     return RAGSearchResult(contexts=found["contexts"], sources=found["sources"])
 
 
@@ -96,10 +93,11 @@ async def rag_ingest_pdf(ctx: Context):
 async def rag_query_pdf_ai(ctx: Context):
     question = ctx.event.data["question"]
     top_k = int(ctx.event.data.get("top_k", 5))
+    source_id = ctx.event.data.get("source_id", None)  # Parse the target metadata scope reference
 
     found = await ctx.step.run(
         "embed-and-search",
-        lambda: _search_step(question, top_k),
+        lambda: _search_step(question, top_k, source_id=source_id),
         output_type=RAGSearchResult
     )
 
@@ -124,7 +122,6 @@ async def rag_query_pdf_ai(ctx: Context):
         )
         return chat_completion.choices[0].message.content
 
-    # Inngest safely checkpoints and returns the string output from _call_llm
     answer = await ctx.step.run("llm-answer", _call_llm)
 
     return {
