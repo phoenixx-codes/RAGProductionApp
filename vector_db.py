@@ -1,6 +1,6 @@
 import os
 from qdrant_client import QdrantClient
-from qdrant_client.models import VectorParams, Distance, PointStruct, Filter, FieldCondition, MatchValue
+from qdrant_client.models import VectorParams, Distance, PointStruct, Filter, FieldCondition, MatchValue, PayloadSchemaType
 
 
 class QdrantStorage:
@@ -17,6 +17,15 @@ class QdrantStorage:
                 collection_name=self.collection,
                 vectors_config=VectorParams(size=dim, distance=Distance.COSINE),
             )
+        try:
+            self.client.create_payload_index(
+                collection_name=self.collection,
+                field_name="source",
+                field_schema=PayloadSchemaType.KEYWORD,
+            )
+        except Exception as index_err:
+            # If it already exists from an earlier handshake, bypass gracefully
+            print(f"Payload index initialization status: {str(index_err)}")
 
     def upsert(self, ids, vectors, payloads):
         points = [PointStruct(id=ids[i], vector=vectors[i], payload=payloads[i]) for i in range(len(ids))]
