@@ -1,0 +1,12 @@
+fastapi
+uvicorn
+streamlit
+requests
+python-dotenv
+sentence-transformers
+qdrant-client
+llama-index-readers-file
+llama-index-core
+groq
+inngest
+pydantic

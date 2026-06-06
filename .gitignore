@@ -1,17 +1,33 @@
-# Python-generated files
-__pycache__/
-*.py[oc]
-build/
-dist/
-wheels/
-*.egg-info
-*.pyc
-*.pyo
-*.pyd
-
-# Virtual environments
+# Python virtual env
 .venv/
 venv/
 
-#Env variables
+# UV cache (VERY important in your case)
+.uv-cache/
+.uv-cache-lock/
+
+# Environment variables
 .env
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Local DB / vector storage (VERY IMPORTANT ⚠️)
+qdrant_storage/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Build / dist
+build/
+dist/
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/

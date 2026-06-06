@@ -1,3 +1,4 @@
+
 import logging
 from fastapi import FastAPI
 import inngest
@@ -17,9 +18,9 @@ load_dotenv()
 
 
 inngest_client = inngest.Inngest(
-    app_id="rag.app",
+    app_id="rag_app",
     logger=logging.getLogger("uvicorn"),
-    is_production=True,
+    is_production=os.getenv("RENDER", "false") == "true",
     serializer=inngest.PydanticSerializer()
 )
 
@@ -51,14 +52,8 @@ def _search_step(question: str, top_k: int = 5) -> RAGSearchResult:
 
 
 @inngest_client.create_function(
-    fn_id="RAG: Ingest PDF",
+    fn_id="rag_ingest_pdf",
     trigger=inngest.TriggerEvent(event="rag/ingest_pdf"),
-    throttle=inngest.Throttle(limit=2, period=datetime.timedelta(minutes=1)),
-    rate_limit=inngest.RateLimit(
-        limit=1,
-        period=datetime.timedelta(hours=4),
-        key="event.data.source_id",
-    ),
 )
 async def rag_ingest_pdf(ctx: inngest.Context):
     chunks_and_src = await ctx.step.run(
@@ -75,7 +70,7 @@ async def rag_ingest_pdf(ctx: inngest.Context):
 
 
 @inngest_client.create_function(
-    fn_id="RAG: Query PDF",
+    fn_id="rag_query_pdf_ai",
     trigger=inngest.TriggerEvent(event="rag/query_pdf_ai")
 )
 async def rag_query_pdf_ai(ctx: inngest.Context):

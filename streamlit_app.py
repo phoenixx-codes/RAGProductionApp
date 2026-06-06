@@ -15,7 +15,8 @@ st.set_page_config(page_title="RAG Ingest PDF", page_icon="📄", layout="center
 
 @st.cache_resource
 def get_inngest_client() -> inngest.Inngest:
-    return inngest.Inngest(app_id="rag_app", is_production=False)
+    is_prod = os.getenv("RENDER", "false") == "true"
+    return inngest.Inngest(app_id="rag_app", is_production=is_prod)
 
 
 def save_uploaded_pdf(file) -> Path:
@@ -74,33 +75,43 @@ async def send_rag_query_event(question: str, top_k: int) -> None:
 
 def _inngest_api_base() -> str:
     # Local dev server default; configurable via env
+    if os.getenv("RENDER", "false") == "true":
+        return "https://api.inngest.com/v1"
     return os.getenv("INNGEST_API_BASE", "http://127.0.0.1:8288/v1")
 
 
 def fetch_runs(event_id: str) -> list[dict]:
     url = f"{_inngest_api_base()}/events/{event_id}/runs"
-    resp = requests.get(url)
-    resp.raise_for_status()
-    data = resp.json()
-    return data.get("data", [])
+    headers = {}
+
+    # In cloud production, Inngest requires the bearer token to look up run states
+    if os.getenv("RENDER", "false") == "true":
+        token = os.getenv("INNGEST_SIGNING_KEY") or os.getenv("INNGEST_EVENT_KEY")
+        headers["Authorization"] = f"Bearer {token}"
+
+    try:
+        resp = requests.get(url, headers=headers, timeout=10)
+        resp.raise_for_status()
+        return resp.json().get("data", [])
+    except Exception:
+        return []
 
 
-def wait_for_run_output(event_id: str, timeout_s: float = 120.0, poll_interval_s: float = 0.5) -> dict:
+async def wait_for_run_output_async(event_id: str, timeout_s: float = 120.0) -> dict:
     start = time.time()
-    last_status = None
     while True:
         runs = fetch_runs(event_id)
         if runs:
             run = runs[0]
             status = run.get("status")
-            last_status = status or last_status
             if status in ("Completed", "Succeeded", "Success", "Finished"):
                 return run.get("output") or {}
             if status in ("Failed", "Cancelled"):
-                raise RuntimeError(f"Function run {status}")
+                raise RuntimeError(f"Function run execution status evaluated as: {status}")
         if time.time() - start > timeout_s:
-            raise TimeoutError(f"Timed out waiting for run output (last status: {last_status})")
-        time.sleep(poll_interval_s)
+            raise TimeoutError("Timed out waiting for context generation output from Inngest.")
+        # Non-blocking async loop yield to prevent memory locks
+        await asyncio.sleep(1.0)
 
 
 with st.form("rag_query_form"):
@@ -112,8 +123,8 @@ with st.form("rag_query_form"):
         with st.spinner("Sending event and generating answer..."):
             # Fire-and-forget event to Inngest for observability/workflow
             event_id = asyncio.run(send_rag_query_event(question.strip(), int(top_k)))
-            # Poll the local Inngest API for the run's output
-            output = wait_for_run_output(event_id)
+            # Execute async polling loop safely
+            output = asyncio.run(wait_for_run_output_async(event_id))
             answer = output.get("answer", "")
             sources = output.get("sources", [])
 
