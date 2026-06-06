@@ -12,11 +12,13 @@ load_dotenv()
 
 st.set_page_config(page_title="RAG Ingest PDF", page_icon="📄", layout="centered")
 
+
 @st.cache_resource
 def get_supabase_client() -> Client:
     url = os.getenv("SUPABASE_URL")
     key = os.getenv("SUPABASE_KEY")
     return create_client(url, key)
+
 
 @st.cache_resource
 def get_inngest_client() -> inngest.Inngest:
@@ -44,7 +46,6 @@ if uploaded is not None:
     safe_filename = uploaded.name.replace(" ", "_")
     # Tracking the active file context across browser refreshes/reruns
     st.session_state["active_file"] = safe_filename
-
 
     if st.session_state.get("last_uploaded") != safe_filename:
         with st.spinner("Uploading file securely to private cloud storage..."):
@@ -146,19 +147,33 @@ with st.form("rag_query_form"):
         if not active_file:
             st.warning("Please upload a PDF file first to establish a search context context.")
         else:
-            with st.spinner("Sending event and generating answer..."):
-                try:
-                    output = asyncio.run(run_query_workflow(question.strip(), int(top_k), active_file))
 
-                    answer = output.get("answer", "")
-                    sources = output.get("sources", [])
+            status_holder = st.empty()
 
-                    st.subheader("Answer")
-                    st.write(answer or "(No answer)")
-                    if sources:
-                        st.caption("Sources")
-                        for s in sources:
-                            st.write(f"- {s}")
+            with status_holder.container():
+                st.info(" Query dispatched to cloud infrastructure. Processing semantics...")
 
-                except Exception as e:
+            try:
+                output = asyncio.run(run_query_workflow(question.strip(), int(top_k), active_file))
+
+                answer = output.get("answer", "")
+                sources = output.get("sources", [])
+
+                # Clear the info alert box out completely before printing the results
+                status_holder.empty()
+
+                st.subheader("Answer")
+                st.write(answer or "(No answer)")
+                if sources:
+                    st.caption("Sources")
+                    for s in sources:
+                        st.write(f"- {s}")
+
+            except Exception as e:
+                status_holder.empty()
+                # Catching timeouts or network spikes gracefully
+                if "TimeoutError" in str(type(e)) or "timeout" in str(e).lower():
+                    st.warning(
+                        " The server is taking a moment to compile a response for this dense context. Please click 'Ask' again in 5 seconds—the backend is already warm!")
+                else:
                     st.error(f"An unexpected query error occurred: {str(e)}")
