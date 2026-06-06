@@ -12,6 +12,8 @@ from groq import Groq
 from data_loader import load_and_chunk_pdf, embed_texts
 from vector_db import QdrantStorage
 from custom_types import RAQQueryResult, RAGSearchResult, RAGUpsertResult, RAGChunkAndSrc
+import base64
+import tempfile
 
 
 load_dotenv()
@@ -32,6 +34,25 @@ def _load_step(ctx: inngest.Context) -> RAGChunkAndSrc:
         raise ValueError("Missing 'pdf_path' in event data.")
     source_id = ctx.event.data.get("source_id", pdf_path)
     chunks = load_and_chunk_pdf(pdf_path)
+    return RAGChunkAndSrc(chunks=chunks, source_id=source_id)def _load_step(ctx: inngest.Context) -> RAGChunkAndSrc:
+    pdf_base64 = ctx.event.data.get("pdf_base64")
+    source_id = ctx.event.data.get("source_id", "document.pdf")
+
+    if not pdf_base64:
+        raise ValueError("Missing 'pdf_base64' string context data.")
+
+    # Write the incoming data safely to an internal OS ephemeral tempfile location
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_pdf:
+        temp_pdf.write(base64.b64decode(pdf_base64))
+        temp_path = temp_pdf.name
+
+    try:
+        chunks = load_and_chunk_pdf(temp_path)
+    finally:
+        # Erase temporary track traces to prevent garbage footprint retention leaks
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
     return RAGChunkAndSrc(chunks=chunks, source_id=source_id)
 
 def _upsert_step(chunks_and_src: RAGChunkAndSrc) -> RAGUpsertResult:

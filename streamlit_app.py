@@ -1,12 +1,11 @@
 import asyncio
-from pathlib import Path
-import time
-
-import streamlit as st
-import inngest
-from dotenv import load_dotenv
+import base64
 import os
+import time
+import inngest
 import requests
+import streamlit as st
+from dotenv import load_dotenv
 
 load_dotenv()
 
@@ -15,27 +14,23 @@ st.set_page_config(page_title="RAG Ingest PDF", page_icon="📄", layout="center
 
 @st.cache_resource
 def get_inngest_client() -> inngest.Inngest:
-    is_prod = os.getenv("RENDER", "false") == "true"
+    # Check if running in production (either Streamlit Cloud or Render environment setup)
+    is_prod = os.getenv("RENDER", "false") == "true" or os.getenv("STREAMLIT_PROD", "false") == "true"
     return inngest.Inngest(app_id="rag_app", is_production=is_prod)
 
 
-def save_uploaded_pdf(file) -> Path:
-    uploads_dir = Path("uploads")
-    uploads_dir.mkdir(parents=True, exist_ok=True)
-    file_path = uploads_dir / file.name
-    file_bytes = file.getbuffer()
-    file_path.write_bytes(file_bytes)
-    return file_path
-
-
-async def send_rag_ingest_event(pdf_path: Path) -> None:
+async def send_rag_ingest_event(file_name: str, file_bytes: bytes) -> None:
     client = get_inngest_client()
+
+    # Convert file bytes to base64 string so it can safely pass through JSON payloads across servers
+    base64_pdf = base64.b64encode(file_bytes).decode("utf-8")
+
     await client.send(
         inngest.Event(
             name="rag/ingest_pdf",
             data={
-                "pdf_path": str(pdf_path.resolve()),
-                "source_id": pdf_path.name,
+                "pdf_base64": base64_pdf,
+                "source_id": file_name,
             },
         )
     )
@@ -45,20 +40,21 @@ st.title("Upload a PDF to Ingest")
 uploaded = st.file_uploader("Choose a PDF", type=["pdf"], accept_multiple_files=False)
 
 if uploaded is not None:
-    with st.spinner("Uploading and triggering ingestion..."):
-        path = save_uploaded_pdf(uploaded)
-        # Kick off the event and block until the send completes
-        asyncio.run(send_rag_ingest_event(path))
-        # Small pause for user feedback continuity
+    with st.spinner("Uploading and triggering ingestion across cloud services..."):
+        # Read the file directly from memory memory buffer
+        file_bytes = uploaded.getvalue()
+
+        # Fire data straight to Inngest Cloud payload broker
+        asyncio.run(send_rag_ingest_event(uploaded.name, file_bytes))
         time.sleep(0.3)
-    st.success(f"Triggered ingestion for: {path.name}")
+    st.success(f"Triggered cloud ingestion for: {uploaded.name}")
     st.caption("You can upload another PDF if you like.")
 
 st.divider()
 st.title("Ask a question about your PDFs")
 
 
-async def send_rag_query_event(question: str, top_k: int) -> None:
+async def send_rag_query_event(question: str, top_k: int) -> str:
     client = get_inngest_client()
     result = await client.send(
         inngest.Event(
@@ -69,13 +65,11 @@ async def send_rag_query_event(question: str, top_k: int) -> None:
             },
         )
     )
-
     return result[0]
 
 
 def _inngest_api_base() -> str:
-    # Local dev server default; configurable via env
-    if os.getenv("RENDER", "false") == "true":
+    if os.getenv("RENDER", "false") == "true" or os.getenv("STREAMLIT_PROD", "false") == "true":
         return "https://api.inngest.com/v1"
     return os.getenv("INNGEST_API_BASE", "http://127.0.0.1:8288/v1")
 
@@ -84,8 +78,8 @@ def fetch_runs(event_id: str) -> list[dict]:
     url = f"{_inngest_api_base()}/events/{event_id}/runs"
     headers = {}
 
-    # In cloud production, Inngest requires the bearer token to look up run states
-    if os.getenv("RENDER", "false") == "true":
+    if os.getenv("RENDER", "false") == "true" or os.getenv("STREAMLIT_PROD", "false") == "true":
+        # Streamlit cloud checks this variable to authorize API inquiries against live workspace logs
         token = os.getenv("INNGEST_SIGNING_KEY") or os.getenv("INNGEST_EVENT_KEY")
         headers["Authorization"] = f"Bearer {token}"
 
@@ -110,7 +104,6 @@ async def wait_for_run_output_async(event_id: str, timeout_s: float = 120.0) -> 
                 raise RuntimeError(f"Function run execution status evaluated as: {status}")
         if time.time() - start > timeout_s:
             raise TimeoutError("Timed out waiting for context generation output from Inngest.")
-        # Non-blocking async loop yield to prevent memory locks
         await asyncio.sleep(1.0)
 
 
@@ -121,9 +114,7 @@ with st.form("rag_query_form"):
 
     if submitted and question.strip():
         with st.spinner("Sending event and generating answer..."):
-            # Fire-and-forget event to Inngest for observability/workflow
             event_id = asyncio.run(send_rag_query_event(question.strip(), int(top_k)))
-            # Execute async polling loop safely
             output = asyncio.run(wait_for_run_output_async(event_id))
             answer = output.get("answer", "")
             sources = output.get("sources", [])
